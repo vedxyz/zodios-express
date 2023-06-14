@@ -1,8 +1,11 @@
 import express from "express";
+import multer from "multer";
 import request from "supertest";
 import z from "zod";
 import { apiBuilder, makeErrors } from "@zodios/core";
 import { zodiosContext } from "./zodios";
+import { Buffer, File } from "buffer";
+import { makeSingleMulterUpload } from "./multer.utils";
 
 const user = z.object({
   id: z.number(),
@@ -112,6 +115,19 @@ const userApi = apiBuilder({
     method: "delete",
     path: "/users/:id",
     response: user,
+  })
+  .addEndpoint({
+    method: "post",
+    path: "/users/form",
+    requestFormat: "form-data",
+    parameters: [
+      {
+        name: "user",
+        type: "Body",
+        schema: user.omit({ id: true }).extend({ image: z.custom<File>() })
+      }
+    ],
+    response: user.extend({ image: z.string() }),
   })
   .build();
 
@@ -416,6 +432,38 @@ describe("router", () => {
       name: "john doe",
       email: "john.doe@domain.com",
     });
+    expect(result.status).toBe(400);
+  });
+
+  it("should succeed if request has valid form-data", async () => {
+    const upload = multer();
+    const validate = true; // test is bypassed when set to "false"
+    const app = zodiosContext().app(userApi, { validate });
+    app.post("/users/form", makeSingleMulterUpload(upload, "image"), async (req, res) => {
+      res.json({ id: 1, ...req.body, image: req.file?.buffer.toString() ?? "" });
+    });
+    const req = request(app);
+    const result = await req.post("/users/form")
+      .field("name", "john doe")
+      .field("email", "john.doe@domain.com")
+      .attach("image", Buffer.from("my_bits"), "filename.png");
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      id: 1,
+      name: "john doe",
+      email: "john.doe@domain.com",
+      image: "my_bits",
+    });
+  });
+  it("should fail if request has invalid form-data", async () => {
+    const upload = multer();
+    const app = zodiosContext().app(userApi);
+    app.post("/users/form", makeSingleMulterUpload(upload, "image"), async (req, res) => {
+      res.json({ id: 1, ...req.body, image: "" });
+    });
+    const req = request(app);
+    const result = await req.post("/users/form")
+      .field("name", "john doe")
     expect(result.status).toBe(400);
   });
 });
